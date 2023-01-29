@@ -1,0 +1,125 @@
+default:
+  image: glyhood/ci-image:latest
+  tags:
+    - ekscluster
+  services:
+    - docker:dind
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+  MAVEN_CLI_OPTS: "-s .m2/settings.xml --batch-mode"
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+  AWS_ECR: 1234567890.dkr.ecr.eu-west-1.amazonaws.com
+  AWS_ECR_DEV: 1234567890.dkr.ecr.eu-west-3.amazonaws.com
+  AWS_REGION: eu-west-1
+
+.maven_build:
+  stage: maven
+  image: maven:3-jdk-11
+  before_script:
+    - git clone https://$GIT_USER:$GIT_TOKEN@gitlab.com/demo/devops/argocd.git &&
+    - mkdir -p .m2
+    - cp argocd/add-ons/.m2/settings.xml .m2/settings.xml
+  script:
+    - "mvn $MAVEN_CLI_OPTS package -e -B -U -DskipTests"
+    - "mvn clean install -Dmaven.test.skip=true"
+  after_script:
+    - cp argocd/add-ons/dd-java-agent.jar target
+#    - cp argocd/add-ons/keepalive-1.0-SNAPSHOT.war target/warkeepalive-1.0-SNAPSHOT.war
+  cache:
+    paths:
+      - .m2/repository
+      - target/
+  artifacts:
+    paths:
+      - target
+
+.build_image:
+  stage: build
+  before_script:
+    - git clone https://$GIT_USER:$GIT_TOKEN@gitlab.com/demo/devops/argocd.git && # to be removed when dockerfile is placed in app repository
+    - CI_PROJECT_NAME=$(echo $CI_PROJECT_NAME | tr '[:upper:]' '[:lower:]') &&
+    - export CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME/\//-} || true
+    - aws configure set region $AWS_REGION &&
+    - $(aws ecr get-login --no-include-email --region $AWS_REGION | sed 's|https://||') &&
+    - aws ecr create-repository --repository-name $CI_PROJECT_NAME || true
+    - export CI_JOB_ID=$CI_COMMIT_REF_NAME-$CI_ENVIRONMENT_NAME-$CI_JOB_ID
+#    - aws ecr put-lifecycle-policy --repository-name $CI_PROJECT_NAME --lifecycle-policy-text "file://argocd/add-ons/ecr-lifecycle-policy.json" || true
+  script:
+    - >
+      docker build 
+      -t $AWS_ECR/$CI_PROJECT_NAME:$CI_JOB_ID .
+    - docker push $AWS_ECR/$CI_PROJECT_NAME:$CI_JOB_ID
+  after_script:
+    - echo "docker image successfully pushed to ECR"
+    - export CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME/\//-} || true
+    - echo "JOB_ID=$CI_COMMIT_REF_NAME-$CI_ENVIRONMENT_NAME-$CI_JOB_ID" >> job.env
+  artifacts: 
+    reports:
+      dotenv: job.env
+
+
+.deploy_test_app:
+  stage: deploy
+  environment:
+    name: development
+  variables:
+    app_version: "$CI_COMMIT_BRANCH-$CI_PIPELINE_ID"
+    BUILD_JOB_ID: $JOB_ID
+    manifest_dir: argocd/apps
+    DD_ALERT: 'echo -e "\e[95;1mView the link below to see the container logs deployed on $(date).\nIn some cases it could take 5 to 10 mins to be available.\nhttps://app.datadoghq.com/containers?query=image_tag%3A$BUILD_JOB_ID&tab=logs \nLogs are not available for test deployments."'
+  before_script:
+    - git clone https://$GIT_USER:$GIT_TOKEN@gitlab.com/demo/devops/argocd.git &&
+    - git config --global user.email "gitlab@gitlab.com" &&
+    - git config --global user.name "GitLab CI/CD" &&
+    - CI_PROJECT_NAME=$(echo $CI_PROJECT_NAME | tr '[:upper:]' '[:lower:]') &&
+    - echo "Commence process to deploy test $CI_PROJECT_NAME app via ArgoCD" &&
+  after_script:
+    - cd $manifest_dir &&
+    - git add --all &&
+    - git commit -m "Deploy test $CI_PROJECT_NAME app version ${app_version} for $CI_PROJECT_NAME" &&
+    - result=$(git push origin main || echo "False")
+    - |
+      if [ "$result" == "False" ]; then
+        echo "A gap between two push, let's pull and retry"
+        git pull
+        git push origin main
+      fi
+    - 'eval "$DD_ALERT"'
+  only:
+    - dev
+    - staging
+
+.deploy_prod_app:
+  stage: deploy
+  environment:
+    name: production
+  variables:
+    app_version: "$CI_COMMIT_BRANCH-$CI_PIPELINE_ID"
+    BUILD_JOB_ID: $JOB_ID
+    manifest_dir: argocd/apps
+    DD_ALERT: 'echo -e "\e[95;1mView the link below to see the container logs deployed on $(date).\nIn some cases it could take 5 to 10 mins to be available.\nhttps://app.datadoghq.com/containers?query=image_tag%3A$BUILD_JOB_ID&tab=logs"'
+  before_script:
+    - git clone https://$GIT_USER:$GIT_TOKEN@gitlab.com/demo/devops/argocd.git &&
+    - git config --global user.email "gitlab@gitlab.com" &&
+    - git config --global user.name "GitLab CI/CD" &&
+    - CI_PROJECT_NAME=$(echo $CI_PROJECT_NAME | tr '[:upper:]' '[:lower:]') &&
+    - echo "Commence process to deploy prod $CI_PROJECT_NAME app via ArgoCD"
+  after_script:
+    - cd $manifest_dir &&
+    - git add --all &&
+    - git commit -m "Deploy prod app version $app_version for $CI_PROJECT_NAME" &&
+    - result=$(git push origin main || echo "False")
+    - |
+      if [ "$result" == "False" ]; then
+        echo "A gap between two push, let's pull and retry"
+        git pull
+        git push origin main
+      fi
+    - 'eval "$DD_ALERT"'
+  only:
+    - master
+    - main
+    - pilot
