@@ -1,0 +1,70 @@
+{
+  "rules": [
+    {
+      "action": {
+        "type": "expire"
+      },
+      "selection": {
+        "countType": "imageCountMoreThan",
+        "countNumber": 20,
+        "tagStatus": "tagged",
+        "tagPrefixList": ["-production-"]
+      },
+
+      "description": "Leave only 10 current prod images",
+      "rulePriority": 1
+    },
+    {
+      "action": {
+        "type": "expire"
+      },
+      "selection": {
+        "countType": "imageCountMoreThan",
+        "countNumber": 8,
+        "tagStatus": "tagged",
+        "tagPrefixList": ["production"]
+      },
+
+      "description": "Leave only 10 current prod images",
+      "rulePriority": 2
+    },
+    {
+      "action": {
+        "type": "expire"
+      },
+      "selection": {
+        "countType": "imageCountMoreThan",
+        "countNumber": 6,
+        "tagStatus": "tagged",
+        "tagPrefixList": ["-development-"]
+      },
+      "description": "leave only 6 current dev images",
+      "rulePriority": 3
+    },
+    {
+      "action": {
+        "type": "expire"
+      },
+      "selection": {
+        "countType": "imageCountMoreThan",
+        "countNumber": 6,
+        "tagStatus": "tagged",
+        "tagPrefixList": ["development"]
+      },
+      "description": "leave only 6 current dev images",
+      "rulePriority": 4
+    },
+    {
+      "action": {
+        "type": "expire"
+      },
+      "selection": {
+        "countType": "imageCountMoreThan",
+        "countNumber": 10,
+        "tagStatus": "any"
+      },
+      "description": "leave only 10 current other images",
+      "rulePriority": 5
+    }
+  ]
+}
