@@ -1,0 +1,49 @@
+name: Smoke Tests
+on:
+  workflow_call:
+    inputs:
+      MICROSERVICE_URL:
+        type: string
+        required: true
+
+jobs:
+    smoke_tests:
+      if: github.base_ref == 'qa' && github.event.pull_request.merged == true
+      runs-on: self-hosted
+      steps:        
+        - name: Smoke Test
+          id: smoke_tests
+          run: |
+
+            URL=${{ inputs.MICROSERVICE_URL }}
+
+            MAX_RETRIES=10
+            RETRY_INTERVAL=10
+            retries=0
+
+            while [[ $retries -lt $MAX_RETRIES ]]; do
+              response=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+              if [[ "$response" == "200" ]]; then
+                echo "Smoke test passed. Service is up and running."
+                exit 0
+              else
+                echo "Smoke test failed with status code: $response. Retrying in $RETRY_INTERVAL seconds..."
+                retries=$((retries + 1))
+                sleep $RETRY_INTERVAL
+              fi
+            done
+
+            echo "Maximum number of retries reached. Smoke test failed."
+            exit 1
+
+        - name: Post Container vulnerability scan to a Slack channel
+          if: always()
+          uses: rtCamp/action-slack-notify@v2
+          env:
+            SLACK_CHANNEL: ABCDEFGHIJK
+            SLACK_COLOR: ${{ job.status }}
+            SLACK_ICON: https://www.google.com/url?sa=i&url=https%3A%2F%2Fdocs.sonarqube.org%2Flatest%2F&psig=AOvVaw0w2T9P8V_lSTbrG3lXodvg&ust=1684621526266000&source=images&cd=vfe&ved=0CA4QjRxqFwoTCMjP36-2gv8CFQAAAAAdAAAAABAD
+            SLACK_MESSAGE: "Smoke test result: ${{ steps.smoke_tests.outcome }}\nFor ${{ github.event.pull_request.html_url || github.event.head_commit.url }}"
+            SLACK_TITLE: Message
+            SLACK_USERNAME: Smoke Test
+            SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_xyz_CONTINUOUS_TESTING }}

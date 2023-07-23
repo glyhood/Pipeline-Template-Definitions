@@ -1,0 +1,39 @@
+name: Container Scan
+on:
+  workflow_call:
+
+jobs:
+    container_vulnerability_scan:
+      if: contains(fromJSON('["qa", "staging", "main"]'), github.base_ref) && github.event.pull_request.merged != true && github.event.pull_request.closed_at == null
+      runs-on: self-hosted
+      steps:
+        - name: Set up Docker Buildx
+          uses: docker/setup-buildx-action@v1
+      
+        - name: build local container
+          uses: docker/build-push-action@v2
+          with:
+            tags: localbuild/testimage:latest
+            push: false
+            load: true
+      
+        - name: Scan image
+          id: scan_image
+          uses: anchore/scan-action@v3
+          with:
+            image: "localbuild/testimage:latest"
+            fail-build: true
+            severity-cutoff: high
+            output-format: table
+    
+        - name: Post Container vulnerability scan to a Slack channel
+          if: '!cancelled()'
+          uses: rtCamp/action-slack-notify@v2
+          env:
+            SLACK_CHANNEL: ABCDEFGHIJK
+            SLACK_COLOR: ${{ job.status }}
+            SLACK_ICON: https://www.google.com/url?sa=i&url=https%3A%2F%2Fdocs.sonarqube.org%2Flatest%2F&psig=AOvVaw0w2T9P8V_lSTbrG3lXodvg&ust=1684621526266000&source=images&cd=vfe&ved=0CA4QjRxqFwoTCMjP36-2gv8CFQAAAAAdAAAAABAD
+            SLACK_MESSAGE: "Container vulnerability scan: ${{ steps.scan_image.outcome }}\nFor ${{ github.event.pull_request.html_url || github.event.head_commit.url }}"
+            SLACK_TITLE: Message
+            SLACK_USERNAME: Anchore
+            SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_xyz_CONTINUOUS_TESTING }}

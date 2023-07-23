@@ -1,0 +1,176 @@
+name: Code Quality
+on:
+  workflow_call:
+    inputs:
+      CODE_COVERAGE:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      SONAR_TOKEN:
+        required: true
+      GH_ACTIONS_PAT:
+        required: true
+      token:
+        required: true
+env:
+  SONAR_HOST_URL: 'https://sonarqube.devops.bexyz.co'
+
+jobs:
+    node_code_quality:
+      if: contains(fromJSON('["qa", "staging", "main"]'), github.base_ref) && inputs.CODE_COVERAGE == 'node' && github.event.pull_request.merged != true && github.event.pull_request.closed_at == null
+      runs-on: self-hosted
+      container:
+        image: ghcr.io/sterling-retailcore-team/ci-image:latest
+        credentials:
+          username: xyz
+          password: ${{  secrets.GH_ACTIONS_PAT }}
+      steps:
+      - uses: actions/checkout@v3
+        with:
+          # Disabling shallow clone is recommended for improving relevancy of reporting.
+          fetch-depth: 0
+      
+      - name: Set Sonar Project Key
+        id: set-sonar-project-key
+        run: |
+          echo "sonar.projectKey=$(echo $GITHUB_REPOSITORY | awk -F '/' '{print $2}')" >> sonar-project.properties
+          echo "sonar.projectCreation.mainBranchName=qa" >> sonar-project.properties
+          echo "REPO_SHORTNAME=$(echo $GITHUB_REPOSITORY | awk -F '/' '{print $2}')" >>$GITHUB_OUTPUT
+
+      - name: Node Code Coverage
+        id: node-code-coverage
+        continue-on-error: true
+        shell: bash
+        run: |
+          yarn install
+          yarn jest --coverage
+
+      - name: SonarQube Scan
+        if: '!cancelled()'
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+  
+      # Check the Quality Gate status.
+      - name: SonarQube Quality Gate check
+        if: '!cancelled()'
+        id: sonarqube-quality-gate-check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        # Force to fail step after specific time.
+        timeout-minutes: 5
+        env:
+         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+         SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+
+      - name: Post SonarQube Quality Gate check to a Slack channel
+        if: '!cancelled()'
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_CHANNEL: ABCDEFGHIJK
+          SLACK_COLOR: ${{ steps.sonarqube-quality-gate-check.outcome }}
+          SLACK_ICON: https://www.google.com/url?sa=i&url=https%3A%2F%2Fdocs.sonarqube.org%2Flatest%2F&psig=AOvVaw0w2T9P8V_lSTbrG3lXodvg&ust=1684621526266000&source=images&cd=vfe&ved=0CA4QjRxqFwoTCMjP36-2gv8CFQAAAAAdAAAAABAD
+          SLACK_MESSAGE: "SonarQube Quality Gate Status: ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}\nFor ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\n See results here ${{ env.SONAR_HOST_URL }}/dashboard?id=${{ steps.set-sonar-project-key.outputs.REPO_SHORTNAME }}"
+          SLACK_TITLE: Message
+          SLACK_USERNAME: Sonarqube
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_xyz_CONTINUOUS_TESTING }}
+
+    python_code_quality:
+      if: contains(fromJSON('["qa", "staging", "main"]'), github.base_ref) && inputs.CODE_COVERAGE == 'python' && github.event.pull_request.merged != true && github.event.pull_request.closed_at == null
+      runs-on: self-hosted
+      env:
+        DEBUG: 0
+        DATABASE_URL: postgres://db_user:db_pass@postgres/test_database
+        SENDER_EMAIL: noreply@example.com
+        SECRET_KEY: samplesecret####
+        ENVIRONMENT: dev
+        CLIENT_URL: http://localhost:3000
+        AMQP_URL: 'amqp://user:pass@host:10000/vhost'
+        SMTP_HOST: smtp.smtp.com
+        EMAIL_HOST_USER: maneger@example.com
+        EMAIL_HOST_PASSWORD: some-pass
+        SENDGRID_API_KEY: some-apih
+        ADMIN_EMAIL: norepyl@gmail.com
+      
+      services:
+        postgres:
+          image: 'postgres:alpine'
+          env:
+            POSTGRES_USER: db_user
+            POSTGRES_PASSWORD: db_pass
+            POSTGRES_DB: test_database
+          volumes:
+            - 'db-data:/var/lib/postgresql/data'
+          ports:
+            - '5432:5432'
+          options: >-
+            --health-cmd pg_isready --health-interval 10s --health-timeout 5s
+            --health-retries 5
+
+      container:
+        image: ghcr.io/sterling-retailcore-team/ci-image:latest
+        credentials:
+          username: xyz
+          password: ${{  secrets.GH_ACTIONS_PAT }}
+      steps:
+      - uses: actions/checkout@v3
+        with:
+          # Disabling shallow clone is recommended for improving relevancy of reporting.
+          fetch-depth: 0
+      
+      - name: Set Sonar Project Key
+        id: set-sonar-project-key
+        run: |
+          echo "sonar.projectKey=$(echo $GITHUB_REPOSITORY | awk -F '/' '{print $2}')" >> sonar-project.properties
+          echo "sonar.projectCreation.mainBranchName=qa" >> sonar-project.properties
+          echo "REPO_SHORTNAME=$(echo $GITHUB_REPOSITORY | awk -F '/' '{print $2}')" >>$GITHUB_OUTPUT
+
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements/dev.txt
+          pip uninstall sterling-utils -y
+          pip install git+https://${{  secrets.token }}@github.com/Prunedge-Dev-Team/retailcore-shared-python.git@main
+      - name: Run migrations
+        shell: bash
+        run: |
+          python app/manage.py makemigrations
+          python app/manage.py migrate
+      - name: Run Tests & Generate report
+        continue-on-error: true
+        shell: bash
+        run: |
+          pytest app/ --cov --cov-report=xml
+
+      - name: SonarQube Scan
+        if: '!cancelled()'
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+  
+      # Check the Quality Gate status.
+      - name: SonarQube Quality Gate check
+        if: '!cancelled()'
+        id: sonarqube-quality-gate-check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        # Force to fail step after specific time.
+        timeout-minutes: 5
+        env:
+         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+         SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+
+      - name: Post SonarQube Quality Gate check to a Slack channel
+        if: '!cancelled()'
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_CHANNEL: ABCDEFGHIJK
+          SLACK_COLOR: ${{ steps.sonarqube-quality-gate-check.outcome }}
+          SLACK_ICON: https://www.google.com/url?sa=i&url=https%3A%2F%2Fdocs.sonarqube.org%2Flatest%2F&psig=AOvVaw0w2T9P8V_lSTbrG3lXodvg&ust=1684621526266000&source=images&cd=vfe&ved=0CA4QjRxqFwoTCMjP36-2gv8CFQAAAAAdAAAAABAD
+          SLACK_MESSAGE: "SonarQube Quality Gate Status: ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}\nFor ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\n See results here ${{ env.SONAR_HOST_URL }}/dashboard?id=${{ steps.set-sonar-project-key.outputs.REPO_SHORTNAME }}"
+          SLACK_TITLE: Message
+          SLACK_USERNAME: Sonarqube
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_xyz_CONTINUOUS_TESTING }}
+  

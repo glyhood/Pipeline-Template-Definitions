@@ -1,0 +1,139 @@
+on:
+  workflow_call:
+    inputs:
+      GITHUB_REPOSITORY:
+        type: string
+        required: true
+      GITHUB_BASE_REF:
+        type: string
+        required: true
+      GITHUB_SHA:
+        type: string
+        required: true
+      GITHUB_REPOSITORY_OWNER:
+        type: string
+        required: true
+      GITHUB_EVENT_NAME:
+        type: string
+        required: true
+      DEPLOY_VARIANT_CONTAINER:
+        required: false
+        type: boolean
+        default: false
+      VARIANT_CONTAINER_NAME:
+        required: false
+        type: string
+        default: ''
+    outputs:
+      MICROSERVICE_URL: 
+        value: ${{ jobs.deploy_microservice.outputs.MICROSERVICE_URL }}
+    secrets:
+      GH_ACTIONS_PAT:
+        required: true
+
+env:
+  AWS_ECR: 1234567890.dkr.ecr.eu-central-1.amazonaws.com
+  AWS_REGION: eu-central-1
+permissions:
+  id-token: write   # This is required for requesting the JWT
+  contents: read
+jobs:
+  deploy_microservice:
+    if: contains(fromJSON('["dev", "dev2", "qa", "staging", "main"]'), github.base_ref) && github.event.pull_request.merged == true
+    outputs:
+      MICROSERVICE_URL: "https://${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}.${{ inputs.GITHUB_BASE_REF }}.bexyz.co"
+    env:
+      FILENAME: '${{ inputs.GITHUB_BASE_REF }}-xyz-apps/${{ inputs.GITHUB_REPOSITORY }}.yaml'
+      VARIANT_FILENAME: '${{ inputs.GITHUB_BASE_REF }}-xyz-apps/${{ inputs.GITHUB_REPOSITORY }}-${{ inputs.VARIANT_CONTAINER_NAME }}.yaml'
+    name: Configure ArgoCD Manifest
+    runs-on: self-hosted
+    steps:
+    - name: Checkout ArgoCD App Manifest Repo
+      uses: actions/checkout@v3
+      with:
+        repository: 'sterling-retailcore-team/argocd'
+        path: argocd
+        token: ${{ secrets.GH_ACTIONS_PAT }}
+        ref: main
+    - name: Set Microservice Name
+      id: set-microservice-name
+      run: |
+        echo "MICROSERVICE_NAME=$(echo $GITHUB_REPOSITORY | awk -F '/' '{print $2}')" >>$GITHUB_OUTPUT
+    - name: Create ArgoCD Manifest if it does not exist
+      run: |
+        cd argocd
+
+        if [[ ! -e ${{ inputs.GITHUB_BASE_REF }}-xyz-apps/${{ inputs.GITHUB_REPOSITORY_OWNER }} ]]; then
+          echo "creating the dir for the microservice"
+          mkdir -p ${{ inputs.GITHUB_BASE_REF }}-xyz-apps/${{ inputs.GITHUB_REPOSITORY_OWNER }}
+        fi
+
+        if [[ ! -e ${{ env.FILENAME}} && ${{ inputs.GITHUB_BASE_REF }} != dev2   ]]; then
+          echo "creating the argocd file for the microservice"
+          cat sample.yaml > ${{ env.FILENAME}}
+          sed -i "s/MICROSERVICE_NAME/${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}/gI" ${{ env.FILENAME}}
+          sed -i "s/ARGOCD_APPNAME/${{ inputs.GITHUB_BASE_REF }}\-${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}/gI" ${{ env.FILENAME}}
+          sed -i "s/ARGOCD_PROJECT/${{ inputs.GITHUB_REPOSITORY_OWNER }}/gI" ${{ env.FILENAME}}
+        fi
+
+        if [[ ! -e ${{ env.FILENAME}} && ${{ inputs.GITHUB_BASE_REF }} == dev2 ]]; then
+          echo "creating the argocd file for the microservice"
+          cat sample.yaml > ${{ env.FILENAME}}
+          sed -i "s/MICROSERVICE_NAME/${{ inputs.GITHUB_BASE_REF }}\-${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}/gI" ${{ env.FILENAME}}
+          sed -i "s/ARGOCD_APPNAME/${{ inputs.GITHUB_BASE_REF }}\-${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}/gI" ${{ env.FILENAME}}
+          sed -i "s/ARGOCD_PROJECT/${{ inputs.GITHUB_REPOSITORY_OWNER }}/gI" ${{ env.FILENAME}}
+        fi
+
+        sed -i "s/repository:.*/repository:\ ${{ env.AWS_ECR }}\/${{ inputs.GITHUB_REPOSITORY_OWNER }}\/${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}/gI" ${{ env.FILENAME}}
+        sed -i "s/tag:.*/tag:\ ${{ inputs.GITHUB_BASE_REF }}\-${{ inputs.GITHUB_SHA }}/gI" ${{ env.FILENAME}}
+
+        git config user.name "$GITHUB_ACTOR"
+        git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+        git add --all
+        git commit -m "Deploy ${{ inputs.GITHUB_REPOSITORY }} based on ${{ inputs.GITHUB_SHA }} ${{ inputs.GITHUB_EVENT_NAME }} to ${{ inputs.GITHUB_BASE_REF }}"  &&
+        result=$(git push origin main || echo "False")
+        if [ "$result" == "False" ]; then
+          echo "A gap between two push, let's pull and retry"
+          git pull
+          git push origin main
+        fi
+
+    - name: Create ArgoCD Manifest for variant if it does not exist
+      if: ${{ inputs.DEPLOY_VARIANT_CONTAINER == true }}
+      run: |
+        cd argocd
+
+        if [[ ! -e ${{ inputs.GITHUB_BASE_REF }}-xyz-apps/${{ inputs.GITHUB_REPOSITORY_OWNER }} ]]; then
+          echo "creating the dir for the microservice"
+          mkdir -p ${{ inputs.GITHUB_BASE_REF }}-xyz-apps/${{ inputs.GITHUB_REPOSITORY_OWNER }}
+        fi
+
+        if [[ ! -e ${{ env.VARIANT_FILENAME}} && ${{ inputs.GITHUB_BASE_REF }} != dev2   ]]; then
+          echo "creating the argocd file for the microservice"
+          cat sample.yaml > ${{ env.VARIANT_FILENAME}}
+          sed -i "s/MICROSERVICE_NAME/${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}\-${{ inputs.VARIANT_CONTAINER_NAME}}/gI" ${{ env.VARIANT_FILENAME}}
+          sed -i "s/ARGOCD_APPNAME/${{ inputs.GITHUB_BASE_REF }}\-${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}\-${{ inputs.VARIANT_CONTAINER_NAME}}/gI" ${{ env.VARIANT_FILENAME}}
+          sed -i "s/ARGOCD_PROJECT/${{ inputs.GITHUB_REPOSITORY_OWNER }}/gI" ${{ env.VARIANT_FILENAME}}
+        fi
+
+        if [[ ! -e ${{ env.VARIANT_FILENAME}} && ${{ inputs.GITHUB_BASE_REF }} == dev2 ]]; then
+          echo "creating the argocd file for the microservice"
+          cat sample.yaml > ${{ env.VARIANT_FILENAME}}
+          sed -i "s/MICROSERVICE_NAME/${{ inputs.GITHUB_BASE_REF }}\-${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}\-${{ inputs.VARIANT_CONTAINER_NAME}}/gI" ${{ env.VARIANT_FILENAME}}
+          sed -i "s/ARGOCD_APPNAME/${{ inputs.GITHUB_BASE_REF }}\-${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}\-${{ inputs.VARIANT_CONTAINER_NAME}}/gI" ${{ env.VARIANT_FILENAME}}
+          sed -i "s/ARGOCD_PROJECT/${{ inputs.GITHUB_REPOSITORY_OWNER }}/gI" ${{ env.VARIANT_FILENAME}}
+        fi
+
+        sed -i "s/repository:.*/repository:\ ${{ env.AWS_ECR }}\/${{ inputs.GITHUB_REPOSITORY_OWNER }}\/${{ steps.set-microservice-name.outputs.MICROSERVICE_NAME }}/gI" ${{ env.VARIANT_FILENAME}}
+        sed -i "s/tag:.*/tag:\ ${{ inputs.GITHUB_BASE_REF }}\-${{ inputs.GITHUB_SHA }}\-${{ inputs.VARIANT_CONTAINER_NAME}}/gI" ${{ env.VARIANT_FILENAME}}
+
+        git config user.name "$GITHUB_ACTOR"
+        git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+        git add --all
+        git commit -m "Deploy ${{ inputs.GITHUB_REPOSITORY }} based on ${{ inputs.GITHUB_SHA }} ${{ inputs.GITHUB_EVENT_NAME }} to ${{ inputs.GITHUB_BASE_REF }}"  &&
+        result=$(git push origin main || echo "False")
+        if [ "$result" == "False" ]; then
+          echo "A gap between two push, let's pull and retry"
+          git pull
+          git push origin main
+        fi

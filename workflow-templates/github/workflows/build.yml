@@ -1,0 +1,145 @@
+on:
+  workflow_call:
+    inputs:
+      GITHUB_REPOSITORY:
+        type: string
+        required: true
+      GITHUB_BASE_REF:
+        type: string
+        required: true
+      GITHUB_SHA:
+        type: string
+        required: true
+      GITHUB_EVENT_NAME:
+        type: string
+        required: true
+      USE_BUILDTIME_ARGS:
+        required: false
+        type: boolean
+        default: false
+      DEPLOY_VARIANT_CONTAINER:
+        required: false
+        type: boolean
+        default: false
+      USE_VARIANT_BUILDTIME_ARGS:
+        required: false
+        type: boolean
+        default: false
+      VARIANT_DOCKERFILE_NAME:
+        required: false
+        type: string
+        default: ''
+      VARIANT_CONTAINER_NAME:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      BUILDTIME_ARGS:
+        required: false
+      VARIANT_BUILDTIME_ARGS:
+        required: false
+      GH_ACTIONS_PAT:
+        required: true
+    outputs:
+      AWS_ECR:
+        value: 1234567890.dkr.ecr.eu-central-1.amazonaws.com
+      AWS_REGION:
+        value: eu-central-1
+
+env:
+  AWS_ECR: 1234567890.dkr.ecr.eu-central-1.amazonaws.com
+  AWS_REGION: eu-central-1
+
+permissions:
+  id-token: write   # This is required for requesting the JWT
+  contents: read
+jobs:
+  build_and_push_image:
+    if: contains(fromJSON('["dev", "dev2", "qa", "staging", "main"]'), github.base_ref) && github.event.pull_request.merged == true
+    name: Build and Push Image
+    runs-on: self-hosted
+    container:
+      image: ghcr.io/sterling-retailcore-team/ci-image:latest
+      credentials:
+        username: xyz
+        password: ${{  secrets.GH_ACTIONS_PAT }}
+    env:
+      AWS_ECR: 1234567890.dkr.ecr.eu-central-1.amazonaws.com
+      AWS_REGION: eu-central-1
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2 # More information on this action can be found below in the 'AWS Credentials' section
+      with:
+        role-to-assume: arn:aws:iam::1234567890:role/github-actions-assumable-role-devops-xyz-eks
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Create ECR repository if it does not exist
+      run: |
+        aws ecr create-repository --repository-name ${{ inputs.GITHUB_REPOSITORY }} || true
+
+    - name: Build, tag, and push docker image to Amazon ECR
+      id: build-and-push
+      run: |
+        if [[ inputs.USE_BUILDTIME_ARGS != true ]]; then
+          docker build -t ${{ env.AWS_ECR }}/${{ inputs.GITHUB_REPOSITORY }}:${{ inputs.GITHUB_BASE_REF }}-${{ inputs.GITHUB_SHA }} .
+          docker push ${{ env.AWS_ECR }}/${{ inputs.GITHUB_REPOSITORY }}:${{ inputs.GITHUB_BASE_REF }}-${{ inputs.GITHUB_SHA }}
+          echo "docker image successfully pushed to ECR"
+        fi
+
+        if [[ inputs.USE_BUILDTIME_ARGS != false ]]; then
+          echo ${{ secrets.BUILDTIME_ARGS }} | base64 -d > .env
+          cat .env
+          docker build -t ${{ env.AWS_ECR }}/${{ inputs.GITHUB_REPOSITORY }}:${{ inputs.GITHUB_BASE_REF }}-${{ inputs.GITHUB_SHA }} .
+          docker push ${{ env.AWS_ECR }}/${{ inputs.GITHUB_REPOSITORY }}:${{ inputs.GITHUB_BASE_REF }}-${{ inputs.GITHUB_SHA }}
+          echo "docker image successfully pushed to ECR"
+        fi
+        
+  build_and_push_variant:
+    if: contains(fromJSON('["dev", "dev2", "qa", "staging", "main"]'), github.base_ref) && inputs.DEPLOY_VARIANT_CONTAINER == true && github.event.pull_request.merged == true
+    runs-on: self-hosted
+    container:
+      image: ghcr.io/sterling-retailcore-team/ci-image:latest
+      credentials:
+        username: xyz
+        password: ${{  secrets.GH_ACTIONS_PAT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::1234567890:role/github-actions-assumable-role-devops-xyz-eks
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Create ECR repository if it does not exist
+        run: |
+          aws ecr create-repository --repository-name ${{ inputs.GITHUB_REPOSITORY }} || true
+
+      - name: Build, tag, and push variant Docker image to Amazon ECR
+        run: |
+          if [[ inputs.USE_VARIANT_BUILDTIME_ARGS != true ]]; then
+            docker build -f ${{ inputs.VARIANT_DOCKERFILE_NAME }} -t ${{ env.AWS_ECR }}/${{ inputs.GITHUB_REPOSITORY }}:${{ inputs.GITHUB_BASE_REF }}-${{ inputs.GITHUB_SHA }}-${{ inputs.VARIANT_CONTAINER_NAME}} .
+            docker push ${{ env.AWS_ECR }}/${{ inputs.GITHUB_REPOSITORY }}:${{ inputs.GITHUB_BASE_REF }}-${{ inputs.GITHUB_SHA }}-${{ inputs.VARIANT_CONTAINER_NAME}}
+            echo "variant docker image successfully pushed to ECR"
+          fi
+
+          if [[ inputs.USE_VARIANT_BUILDTIME_ARGS != false ]]; then
+            echo ${{ secrets.VARIANT_BUILDTIME_ARGS }} | base64 -d > .env
+            cat .env
+            docker build -f ${{ inputs.VARIANT_DOCKERFILE_NAME }} -t ${{ env.AWS_ECR }}/${{ inputs.GITHUB_REPOSITORY }}:${{ inputs.GITHUB_BASE_REF }}-${{ inputs.GITHUB_SHA }}-${{ inputs.VARIANT_CONTAINER_NAME}} -f ${{ inputs.VARIANT_DOCKERFILE_NAME }} .
+            docker push ${{ env.AWS_ECR }}/${{ inputs.GITHUB_REPOSITORY }}:${{ inputs.GITHUB_BASE_REF }}-${{ inputs.GITHUB_SHA }}-${{ inputs.VARIANT_CONTAINER_NAME}}
+            echo "variant docker image successfully pushed to ECR"
+          fi
